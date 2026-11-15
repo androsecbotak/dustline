@@ -1,13 +1,16 @@
-// Bots (v2 — free-for-all battle royale): the other soldiers. Each is a humanoid
+// Bots (v3 — 5v5 rounds): the other soldiers. Each is a humanoid
 // soldier in muted military kit — tapered torso, helmet dome, plate carrier, pads —
 // with a head mesh and a torso mesh a bullet can hit. They navigate the waypoint
-// graph, roam, chase loot, rotate into the
-// zone, react to what they see and hear, and shoot back in bursts with their own
-// weapon's stats. Every bot is hostile to every other combatant (player + all bots);
-// the player is the camera, so a bot checks a hit on the player against a capsule.
+// graph, hold their site or push the attack site, react to what they see and
+// hear, and shoot back in bursts with their own weapon's stats. Bots are
+// team-based now: Vanguard (player + 4 bots) vs Crimson (5 bots); a bot only
+// ever targets the other team (ctx.enemiesOf). Smoke blocks their sight and a
+// flash blinds them (see visibleEnemy / the firing branch); radio callouts go
+// out through ctx.radio, rate-limited per bot.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { WEAPONS } from './weapons.js';
+import { MAP, locationAt } from './world.js';
 import { createMover, STAND_EYE } from './player.js';
 
 const BOT_SPEED = 4.0;
@@ -28,7 +31,17 @@ const LOOT_UPGRADE_RANGE = 4; // How close an upgrade pickup must be for an arme
 const LOOT_ARRIVE_DIST = 1.5;
 const ZONE_FIGHT_RANGE = 12; // Outside the zone, only fight enemies closer than this.
 
-// Muted military cloth colours (olive drab / tan / grey-green / dusty brown) so
+// Named bots. main.js spawns with these names; spawn() falls back to the
+// pools below when no name is given (team unknown at spawn time, so the
+// fallback draws from the combined pool in spawn order).
+export const VANGUARD_NAMES = ['Flint', 'Moth', 'Sable', 'Rook'];
+export const CRIMSON_NAMES = ['Marlin', 'Gull', 'Reef', 'Brine', 'Wake'];
+const RADIO_GAP = 8; // seconds between radio callouts from the same bot.
+
+// Seeded random when the coordinator passes one (main.js passes its
+// mulberry32); plain Math.random otherwise. No new Math.random calls are
+// added in gameplay code — the uses below all go through rng().
+let rng = Math.random;
 // bots stay distinct from each other yet read dark against the sand.
 const CLOTH_COLORS = ['#5c6244', '#7d7154', '#565a52', '#3f4a35', '#6b5138', '#4f565c'];
 
@@ -40,10 +53,9 @@ const _v2 = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 
 function randomWeaponId() {
-  // NOTE: loot.js does not exist yet, so there is no randomWeapon to import. When it
-  // lands, replace this with `import { randomWeapon } from './loot.js'` and use it.
+  // Seeded when the coordinator passed its random into createBots.
   const ids = Object.keys(WEAPONS);
-  return ids[Math.floor(Math.random() * ids.length)];
+  return ids[Math.floor(rng() * ids.length)];
 }
 
 function weaponStats(bot) {
@@ -180,27 +192,39 @@ function buildSoldier(color) {
 }
 
 export function createBots(scene, world, opts) {
+  if (opts && typeof opts.random === 'function') rng = opts.random;
   const raycaster = new THREE.Raycaster();
   raycaster.far = 80;
   const bots = [];
   const hitMeshes = [];
   let nextId = 1;
 
+  // Rate-limited radio callout from one bot (at most one per RADIO_GAP).
+  function radioBot(bot, ctx, time, text) {
+    if (!ctx || typeof ctx.radio !== 'function') return;
+    if (time - bot.lastRadioAt < RADIO_GAP) return;
+    bot.lastRadioAt = time;
+    ctx.radio(text);
+  }
+
   function spawn(name, position, weaponId) {
+    const botName = name
+      || [...VANGUARD_NAMES, ...CRIMSON_NAMES][(nextId - 1) % (VANGUARD_NAMES.length + CRIMSON_NAMES.length)];
     const parts = buildSoldier(CLOTH_COLORS[(nextId - 1) % CLOTH_COLORS.length]);
     parts.group.position.copy(position);
     scene.add(parts.group);
     const mover = createMover(world.colliders, position);
-    mover.state.yaw = Math.random() * Math.PI * 2;
+    mover.state.yaw = rng() * Math.PI * 2;
     const bot = {
-      id: nextId, name, team: 'ffa', parts, mover,
+      id: nextId, name: botName, team: 'ffa', parts, mover,
       health: BOT_HEALTH, armor: 0, helmetTier: 0,
       weaponId: weaponId || randomWeaponId(),
       alive: true, fall: 0,
       path: [], pathIndex: 0, dest: null, stuckTimer: 0, lastPos: position.clone(),
-      target: null, aimError: 0.05, burstLeft: 0, burstTimer: 0, reactTimer: 0,
-      thinkTimer: Math.random() * 0.15, alertPos: null, alertTimer: 0,
+      target: null, aimError: 0.05, aimMult: 1, burstLeft: 0, burstTimer: 0, reactTimer: 0,
+      thinkTimer: rng() * 0.15, alertPos: null, alertTimer: 0,
       intent: 'roam', lootTarget: null, walkPhase: 0, gunKick: 0,
+      lastRadioAt: -RADIO_GAP, spotted: false,
     };
     nextId += 1;
     parts.torso.userData.bot = bot;
@@ -230,6 +254,8 @@ export function createBots(scene, world, opts) {
       const toEnemy = _v1.clone().normalize();
       if (forward.dot(toEnemy) < Math.cos(SEE_FOV)) continue;
       if (!ctx.lineOfSight(botEye(bot), enemy.eyePos())) continue;
+      // Smoke blocks sight: a bot cannot see or shoot through a smoke cloud.
+      if (ctx.smokeBlocksLOS && ctx.smokeBlocksLOS(botEye(bot), enemy.eyePos())) continue;
       if (dist < bestDist) { bestDist = dist; best = enemy; }
     }
     return best;
@@ -254,11 +280,13 @@ export function createBots(scene, world, opts) {
   }
 
   function firePellet(bot, ctx, target, stats, eye, aimPoint, dist) {
-    const spread = 0.028 + dist * 0.0009 + (target.moving ? 0.012 : 0) + stats.spreadExtra;
+    // Aim error multiplies by (1 + blind × 4) while the bot is flashed
+    // (bot.aimMult is set in the firing branch; 1 when not flashed).
+    const spread = (0.028 + dist * 0.0009 + (target.moving ? 0.012 : 0) + stats.spreadExtra) * (bot.aimMult || 1);
     _dir.copy(aimPoint).sub(eye).normalize();
-    _dir.x += (Math.random() * 2 - 1) * spread;
-    _dir.y += (Math.random() * 2 - 1) * spread;
-    _dir.z += (Math.random() * 2 - 1) * spread;
+    _dir.x += (rng() * 2 - 1) * spread;
+    _dir.y += (rng() * 2 - 1) * spread;
+    _dir.z += (rng() * 2 - 1) * spread;
     _dir.normalize();
     raycaster.set(eye, _dir);
     raycaster.far = Math.min(80, dist + 6);
@@ -323,8 +351,8 @@ export function createBots(scene, world, opts) {
     const zone = ctx.zone;
     // A point just inside the zone: near the centre with a small random offset, so
     // bots do not all pile onto the exact centre.
-    const angle = Math.random() * Math.PI * 2;
-    const r = Math.random() * Math.max(0, zone.radius * 0.5);
+    const angle = rng() * Math.PI * 2;
+    const r = rng() * Math.max(0, zone.radius * 0.5);
     return new THREE.Vector3(zone.center.x + Math.cos(angle) * r, 0, zone.center.z + Math.sin(angle) * r);
   }
 
@@ -333,13 +361,13 @@ export function createBots(scene, world, opts) {
     const nodes = world.nodes;
     if (!nodes || nodes.length === 0) return null;
     for (let attempt = 0; attempt < 8; attempt += 1) {
-      const node = nodes[Math.floor(Math.random() * nodes.length)];
+      const node = nodes[Math.floor(rng() * nodes.length)];
       if (!zone || !zone.center) return node.clone();
       const dx = node.x - zone.center.x;
       const dz = node.z - zone.center.z;
       if (Math.hypot(dx, dz) < zone.radius) return node.clone();
     }
-    return nodes[Math.floor(Math.random() * nodes.length)].clone();
+    return nodes[Math.floor(rng() * nodes.length)].clone();
   }
 
   // Loot: only when no enemy is visible and the bot is inside the zone. Returns a
@@ -372,8 +400,18 @@ export function createBots(scene, world, opts) {
       if (bot.thinkTimer <= 0) {
         bot.thinkTimer = 0.15;
         justThought = true;
+        const prevTarget = bot.target;
         bot.target = visibleEnemy(bot, ctx);
-        if (bot.target) bot.reactTimer = Math.max(bot.reactTimer, REACTION_MIN + Math.random() * (REACTION_MAX - REACTION_MIN));
+        // First spot of an enemy: radio the contact with its location, and
+        // start the reaction delay. (The delay must only be set on first
+        // acquisition: re-setting it on every think tick kept reactTimer
+        // above zero forever, so a bot staring at a visible enemy never
+        // fired a single shot.)
+        if (bot.target && !prevTarget) {
+          const eye = bot.target.eyePos();
+          radioBot(bot, ctx, time, `Contact at ${locationAt(eye.x, eye.z).name}`);
+          bot.reactTimer = Math.max(bot.reactTimer, REACTION_MIN + rng() * (REACTION_MAX - REACTION_MIN));
+        }
       }
       const p = bot.mover.state;
       let keys = new Set();
@@ -389,11 +427,20 @@ export function createBots(scene, world, opts) {
         bot.intent = 'fight';
         bot.lootTarget = null;
         aimAt(bot, bot.target.aimPoint(), dt);
+        // Flash awareness: a flashed bot skips its firing burst while blind
+        // > 0.5, and its aim error multiplies by (1 + blind × 4) while > 0.15.
+        const eye = botEye(bot);
+        const facing = _v2.set(-Math.sin(bot.mover.state.yaw), 0, -Math.cos(bot.mover.state.yaw));
+        const blind = ctx.flashLevelAt ? ctx.flashLevelAt(eye, facing, ctx.lineOfSight) : 0;
+        bot.aimMult = blind > 0.15 ? 1 + blind * 4 : 1;
         bot.burstTimer -= dt;
-        if (bot.burstTimer <= 0) {
+        if (blind > 0.5) {
+          // Fully flashed: hold fire, keep the burst timer from firing.
+          bot.burstTimer = Math.max(bot.burstTimer, 0.2);
+        } else if (bot.burstTimer <= 0) {
           if (bot.burstLeft <= 0) {
-            bot.burstLeft = BURST_MIN + Math.floor(Math.random() * (BURST_MAX - BURST_MIN + 1));
-            bot.burstTimer = 0.55 + Math.random() * 0.5;
+            bot.burstLeft = BURST_MIN + Math.floor(rng() * (BURST_MAX - BURST_MIN + 1));
+            bot.burstTimer = 0.55 + rng() * 0.5;
           } else {
             fireAt(bot, ctx, bot.target);
             bot.burstLeft -= 1;
@@ -402,14 +449,51 @@ export function createBots(scene, world, opts) {
         }
       } else {
         bot.reactTimer -= dt;
-        // Movement priority: zone rotation > loot > roam.
+        // Rounds mode (ctx.getPhase exists): no zone/loot — attackers push
+        // the attack site, defenders hold their site's MAP.holds positions.
+        // The generic path-following below still drives the movement.
+        const roundsMode = ctx && typeof ctx.getPhase === 'function' && ctx.getPhase() === 'live';
+        if (roundsMode && !bot.target) {
+          const attackingTeam = ctx.getAttackingTeam ? ctx.getAttackingTeam() : 'vanguard';
+          const site = ctx.getAttackSite ? ctx.getAttackSite() : null;
+          if (site) {
+            const siteLetter = site.x < 0 ? 'A' : 'B';
+            if (bot.team === attackingTeam) {
+              if (bot.intent !== 'push' || bot.pathIndex >= bot.path.length) {
+                bot.intent = 'push';
+                bot.lootTarget = null;
+                // Small per-bot offset so attackers do not stack on one point.
+                const off = (bot.id % 3 - 1) * 2.5;
+                setPath(bot, new THREE.Vector3(site.x + off, 0, site.z + 2 + (bot.id % 2)));
+                radioBot(bot, ctx, time, `Rotating to Site ${siteLetter}`);
+              }
+            } else {
+              const holds = (MAP.holds && MAP.holds[siteLetter]) || [site];
+              const hold = holds[bot.id % holds.length];
+              if (bot.mover.state.position.distanceTo(hold) > 1.5) {
+                if (bot.intent !== 'hold' || bot.pathIndex >= bot.path.length) {
+                  bot.intent = 'hold';
+                  bot.lootTarget = null;
+                  setPath(bot, hold);
+                  radioBot(bot, ctx, time, `Holding Site ${siteLetter}`);
+                }
+              } else {
+                // On the hold position: stand and watch the site.
+                bot.intent = 'hold';
+                bot.path = [];
+                bot.pathIndex = 0;
+              }
+            }
+          }
+        }
+        // Movement priority: zone rotation > loot > roam (BR mode only).
         if (!zone.inside) {
           if (bot.intent !== 'zone' || bot.pathIndex >= bot.path.length) {
             bot.intent = 'zone';
             bot.lootTarget = null;
             setPath(bot, zonePoint(bot, ctx));
           }
-        } else if (!bot.target && justThought) {
+        } else if (!bot.target && justThought && !roundsMode) {
           // Loot is only considered on think ticks, when no enemy is visible.
           const pickup = lootToChase(bot, ctx);
           if (pickup) {
@@ -421,7 +505,7 @@ export function createBots(scene, world, opts) {
             bot.lootTarget = null;
           }
         }
-        if (bot.intent !== 'zone' && bot.intent !== 'loot'
+        if (!roundsMode && bot.intent !== 'zone' && bot.intent !== 'loot'
           && (bot.path.length === 0 || bot.pathIndex >= bot.path.length)) {
           bot.intent = 'roam';
           const dest = randomRoamPoint(bot, ctx);
@@ -491,17 +575,20 @@ export function createBots(scene, world, opts) {
       bot.pathIndex = 0;
       bot.dest = null;
       bot.target = null;
+      bot.aimMult = 1;
       bot.burstLeft = 0;
       bot.burstTimer = 0;
       bot.reactTimer = 0;
       bot.stuckTimer = 0;
       bot.intent = 'roam';
       bot.lootTarget = null;
+      bot.lastRadioAt = -RADIO_GAP;
+      bot.spotted = false;
       bot.weaponId = randomWeaponId();
       const spawn = points[i % points.length];
       bot.mover.state.position.copy(spawn);
       bot.mover.state.velocity.set(0, 0, 0);
-      bot.mover.state.yaw = Math.random() * Math.PI * 2;
+      bot.mover.state.yaw = rng() * Math.PI * 2;
       bot.mover.state.pitch = 0;
       bot.lastPos.copy(spawn);
       bot.parts.group.rotation.set(0, bot.mover.state.yaw, 0);

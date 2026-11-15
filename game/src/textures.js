@@ -560,3 +560,250 @@ export function siteTexture(letter) {
   ctx.fillText(letter, 128, 134);
   return finish(c);
 }
+
+// ---- v3 refinery theme: sandstone, corrugated steel, pipework, tanks, oil, signs ----
+
+// Sandstone blockwork: warm tan ashlar courses with mortar joints, per-block
+// tone variation, dust and a few dark stains — for the Pump Court walls.
+export function sandstoneTexture() {
+  const [c, ctx] = canvas(512, 512);
+  const r = rng(113);
+  ctx.fillStyle = PALETTE.sandstone;
+  ctx.fillRect(0, 0, 512, 512);
+  const rows = 8;
+  const rh = 512 / rows;
+  for (let row = 0; row < rows; row++) {
+    const off = row % 2 ? 64 : 0;
+    for (let x = -128; x < 512; x += 128) {
+      const tone = r();
+      ctx.fillStyle = tone < 0.33 ? 'rgba(255,230,190,0.10)' : tone < 0.66 ? 'rgba(120,84,44,0.10)' : 'rgba(90,60,30,0.08)';
+      ctx.fillRect(x + off + 2, row * rh + 2, 124, rh - 4);
+      // chipped corner on some blocks
+      if (r() < 0.25) {
+        ctx.fillStyle = 'rgba(70,48,26,0.25)';
+        ctx.beginPath();
+        ctx.moveTo(x + off + 2, row * rh + 2);
+        ctx.lineTo(x + off + 18 + r() * 14, row * rh + 2);
+        ctx.lineTo(x + off + 2, row * rh + 16 + r() * 12);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    // mortar joint
+    ctx.fillStyle = 'rgba(74,54,32,0.55)';
+    ctx.fillRect(0, row * rh - 1, 512, 3);
+  }
+  // vertical joints
+  ctx.fillStyle = 'rgba(74,54,32,0.45)';
+  for (let row = 0; row < rows; row++) {
+    const off = row % 2 ? 64 : 0;
+    for (let x = -128; x < 512; x += 128) ctx.fillRect(x + off - 1, row * rh, 3, rh);
+  }
+  // dust wash near the bottom, rust weep near the top
+  const dust = ctx.createLinearGradient(0, 380, 0, 512);
+  dust.addColorStop(0, 'rgba(120,90,50,0)');
+  dust.addColorStop(1, 'rgba(120,90,50,0.25)');
+  ctx.fillStyle = dust;
+  ctx.fillRect(0, 380, 512, 132);
+  ctx.fillStyle = PALETTE.containerRust;
+  for (let i = 0; i < 8; i++) {
+    ctx.globalAlpha = 0.12 + r() * 0.18;
+    ctx.fillRect(r() * 512, 0, 3 + r() * 6, 30 + r() * 90);
+  }
+  ctx.globalAlpha = 1;
+  speckles(ctx, r, 512, 512, 6000, [PALETTE.sandstoneDark, '#d8b37e', '#8a6a3f'], 1, 3);
+  return finish(c);
+}
+
+// Corrugated steel: deep vertical ribs with a light crown and dark valley,
+// sun-faded paint, rust creeping up from the bottom edge — for the sheds.
+export function corrugatedTexture(base) {
+  const [c, ctx] = canvas(512, 512);
+  const r = rng(127);
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, 512, 512);
+  for (let x = 0; x < 512; x += 32) {
+    ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fillRect(x, 0, 8, 512);
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(x + 16, 0, 8, 512);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x + 28, 0, 4, 512);
+  }
+  // faded paint patches
+  for (let i = 0; i < 10; i++) {
+    ctx.fillStyle = r() < 0.5 ? 'rgba(240,225,190,0.08)' : 'rgba(20,16,10,0.08)';
+    ctx.beginPath();
+    ctx.ellipse(r() * 512, r() * 512, 40 + r() * 100, 24 + r() * 60, r() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // rust streaks running down from the top
+  ctx.fillStyle = PALETTE.containerRust;
+  for (let i = 0; i < 16; i++) {
+    ctx.globalAlpha = 0.2 + r() * 0.3;
+    ctx.fillRect(r() * 512, 0, 3 + r() * 7, 50 + r() * 200);
+  }
+  ctx.globalAlpha = 1;
+  // rust band along the bottom edge
+  const rustBand = ctx.createLinearGradient(0, 420, 0, 512);
+  rustBand.addColorStop(0, 'rgba(122,74,40,0)');
+  rustBand.addColorStop(1, 'rgba(122,74,40,0.55)');
+  ctx.fillStyle = rustBand;
+  ctx.fillRect(0, 420, 512, 92);
+  // dents
+  for (let i = 0; i < 6; i++) {
+    const x = r() * 512, y = 60 + r() * 380;
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.beginPath(); ctx.ellipse(x, y, 12 + r() * 22, 7 + r() * 12, r() * Math.PI, 0, Math.PI * 2); ctx.fill();
+  }
+  speckles(ctx, r, 512, 512, 1000, ['rgba(0,0,0,0.35)', 'rgba(255,255,255,0.22)'], 1, 2);
+  return finish(c);
+}
+
+// Rusted pipe steel: dark brown-grey with horizontal weld bands, rust blooms
+// and oil sheen — for pipe racks, columns and the flare stack.
+export function pipeTexture() {
+  const [c, ctx] = canvas(512, 512);
+  const r = rng(131);
+  ctx.fillStyle = PALETTE.pipe;
+  ctx.fillRect(0, 0, 512, 512);
+  // horizontal brushed bands
+  for (let y = 0; y < 512; y += 6) {
+    ctx.fillStyle = r() < 0.5 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.10)';
+    ctx.fillRect(0, y, 512, 3);
+  }
+  // weld seams
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  for (const y of [128, 256, 384]) ctx.fillRect(0, y, 512, 4);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  for (const y of [132, 260, 388]) ctx.fillRect(0, y, 512, 2);
+  // rust blooms along the seams
+  ctx.fillStyle = PALETTE.rust;
+  for (let i = 0; i < 30; i++) {
+    const seamY = [128, 256, 384][(r() * 3) | 0] + (r() - 0.5) * 10;
+    ctx.globalAlpha = 0.12 + r() * 0.22;
+    ctx.beginPath();
+    ctx.ellipse(r() * 512, seamY, 5 + r() * 14, 4 + r() * 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // oil sheen streaks
+  for (let i = 0; i < 10; i++) {
+    ctx.fillStyle = 'rgba(12,10,8,0.18)';
+    ctx.globalAlpha = 0.5 + r() * 0.5;
+    ctx.beginPath();
+    ctx.ellipse(r() * 512, r() * 512, 14 + r() * 40, 8 + r() * 20, r() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  speckles(ctx, r, 512, 512, 1200, ['rgba(255,255,255,0.18)', 'rgba(0,0,0,0.3)'], 1, 2);
+  return finish(c);
+}
+
+// Storage tank: horizontal strake bands with rivet rows, a hazard stripe near
+// the top, rust weeping from the rim and the base.
+export function tankTexture(base) {
+  const [c, ctx] = canvas(512, 512);
+  const r = rng(137);
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, 512, 512);
+  // horizontal strakes
+  for (let y = 0; y < 512; y += 128) {
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(0, y, 512, 6);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(0, y + 6, 512, 4);
+    // rivets along each strake
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    for (let x = 16; x < 512; x += 32) {
+      ctx.beginPath(); ctx.arc(x, y + 22, 4, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  // faded hazard stripe near the top
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  for (let x = -64; x < 512; x += 64) {
+    ctx.fillStyle = (x / 64) % 2 === 0 ? '#d8a028' : '#2a2118';
+    ctx.beginPath();
+    ctx.moveTo(x, 44); ctx.lineTo(x + 32, 44); ctx.lineTo(x + 64, 84); ctx.lineTo(x + 32, 84);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  // sun-fade patches
+  for (let i = 0; i < 10; i++) {
+    ctx.fillStyle = r() < 0.5 ? 'rgba(240,225,190,0.07)' : 'rgba(20,16,10,0.08)';
+    ctx.beginPath();
+    ctx.ellipse(r() * 512, r() * 512, 50 + r() * 110, 30 + r() * 70, r() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // rust weeping from the top rim and pooling at the base
+  ctx.fillStyle = PALETTE.rust;
+  for (let i = 0; i < 14; i++) {
+    ctx.globalAlpha = 0.18 + r() * 0.25;
+    ctx.fillRect(r() * 512, 0, 4 + r() * 8, 30 + r() * 120);
+  }
+  for (let i = 0; i < 12; i++) {
+    ctx.globalAlpha = 0.12 + r() * 0.18;
+    ctx.beginPath();
+    ctx.ellipse(r() * 512, 460 + r() * 52, 10 + r() * 24, 5 + r() * 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  speckles(ctx, r, 512, 512, 1000, ['rgba(0,0,0,0.3)', 'rgba(255,255,255,0.2)'], 1, 2);
+  return finish(c);
+}
+
+// Oil stain decal: a dark iridescent blotch with a ragged edge, drawn once and
+// laid flat on the sand near the refinery.
+export function oilStainTexture() {
+  const [c, ctx] = canvas(256, 256);
+  const r = rng(149);
+  ctx.clearRect(0, 0, 256, 256);
+  const g = ctx.createRadialGradient(128, 128, 8, 128, 128, 120);
+  g.addColorStop(0, 'rgba(14,12,10,0.92)');
+  g.addColorStop(0.55, 'rgba(20,16,12,0.75)');
+  g.addColorStop(0.85, 'rgba(28,22,16,0.35)');
+  g.addColorStop(1, 'rgba(28,22,16,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  for (let i = 0; i <= 24; i++) {
+    const a = (i / 24) * Math.PI * 2;
+    const rad = 100 + (r() - 0.5) * 36;
+    const x = 128 + Math.cos(a) * rad;
+    const y = 128 + Math.sin(a) * rad * 0.8;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill();
+  // faint rainbow sheen arcs
+  ctx.strokeStyle = 'rgba(120,140,160,0.12)';
+  ctx.lineWidth = 5;
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.arc(128, 128, 40 + i * 18 + r() * 8, r() * Math.PI, r() * Math.PI + 1.2 + r());
+    ctx.stroke();
+  }
+  return finish(c);
+}
+
+// Unit-marking sign plate: dark steel plate, amber border, bold label + subline.
+// Deterministic text drawing, no RNG involved.
+export function plateTexture(text, sub) {
+  const [c, ctx] = canvas(512, 256);
+  ctx.fillStyle = '#2a2118';
+  ctx.fillRect(0, 0, 512, 256);
+  ctx.strokeStyle = PALETTE.accent;
+  ctx.lineWidth = 10;
+  ctx.strokeRect(14, 14, 484, 228);
+  ctx.strokeStyle = 'rgba(255,179,71,0.35)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(30, 30, 452, 196);
+  ctx.fillStyle = PALETTE.accent;
+  ctx.font = 'bold 64px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, sub ? 102 : 128);
+  if (sub) {
+    ctx.font = 'bold 34px Arial, sans-serif';
+    ctx.fillStyle = '#d8c9a8';
+    ctx.fillText(sub, 256, 178);
+  }
+  // rivets in the corners
+  ctx.fillStyle = '#c9c2b2';
+  for (const [x, y] of [[30, 30], [482, 30], [30, 226], [482, 226]]) {
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+  }
+  return finish(c);
+}
