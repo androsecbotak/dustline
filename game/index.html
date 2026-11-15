@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DUSTLINE — a three.js tactical FPS</title>
+<title>DUSTLINE — a three.js battle royale</title>
 <style>
   /* Look plan: dusk desert — warm sand, terracotta, deep blue-grey shadow, one amber accent. */
   :root {
@@ -15,6 +15,7 @@
     --accent: #f0a830;
     --danger: #d53a3a;
     --good: #7fb069;
+    --blue: #2e62b2;
     --radius-panel: 4px;
     --radius-control: 8px;
     --font-ui: system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -48,19 +49,22 @@
   #damage.on { animation: dmg 500ms ease-out; }
   @keyframes dmg { 0% { opacity: 1; } 100% { opacity: 0; } }
 
-  #topbar { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 18px; font-family: var(--font-readout); }
-  #round-value { font-size: 13px; letter-spacing: .12em; color: var(--muted); }
-  #score-value { font-size: 22px; font-weight: 600; letter-spacing: .02em; }
+  #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 360px; height: 28px; border: 1px solid var(--hairline); border-radius: var(--radius-panel); overflow: hidden; }
+  #compass-canvas { display: block; width: 360px; height: 28px; }
+
+  #topbar { position: fixed; top: 48px; left: 50%; transform: translateX(-50%); display: flex; align-items: baseline; gap: 18px; font-family: var(--font-readout); }
+  #alive-value { font-size: 22px; font-weight: 600; letter-spacing: .02em; }
+  #timer-label { font-size: 12px; letter-spacing: .14em; color: var(--muted); }
   #timer-value { font-size: 22px; font-weight: 600; }
   #timer-value.urgent { color: var(--danger); }
-  #bomb-status { position: fixed; top: 58px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 13px; color: var(--accent); background: rgba(35, 42, 51, .8); padding: 6px 12px; border: 1px solid var(--hairline); border-radius: var(--radius-panel); display: none; }
-  #bomb-status.urgent { color: var(--danger); }
+  #zone-status { position: fixed; top: 84px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 13px; color: var(--ink); background: rgba(35, 42, 51, .8); padding: 6px 12px; border: 1px solid var(--hairline); border-radius: var(--radius-panel); }
+  #zone-status.shrinking { color: var(--accent); border-color: var(--accent); }
+  #zone-status.outside { color: var(--danger); border-color: var(--danger); animation: zone-pulse 900ms ease-in-out infinite alternate; }
+  @keyframes zone-pulse { from { background: rgba(35, 42, 51, .8); } to { background: rgba(213, 58, 58, .35); } }
 
-  #money { position: fixed; top: 18px; right: 28px; text-align: right; font-family: var(--font-readout); }
-  #money-value { font-size: 22px; font-weight: 600; color: var(--accent); }
-  #grenade-value { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  #minimap { position: fixed; top: 18px; right: 28px; width: 150px; height: 150px; border: 1px solid var(--hairline); border-radius: var(--radius-panel); }
 
-  #killfeed { position: fixed; top: 84px; right: 28px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; font-size: 13px; color: var(--muted); }
+  #killfeed { position: fixed; top: 180px; right: 28px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; font-size: 13px; color: var(--muted); }
   .feed-line { background: rgba(35, 42, 51, .8); padding: 4px 10px; border-radius: var(--radius-panel); border: 1px solid var(--hairline); }
 
   #health-block { position: fixed; left: 28px; bottom: 24px; width: 220px; }
@@ -72,6 +76,15 @@
   .bar i.low { background: var(--danger); }
   #armor-fill { background: #7fb3d5; }
   #health-value { font-family: var(--font-readout); font-size: 13px; width: 28px; text-align: right; }
+
+  #heals { display: flex; gap: 6px; margin-top: 10px; }
+  .heal-slot { flex: 1; font-family: var(--font-readout); font-size: 11px; color: var(--ink); background: rgba(35, 42, 51, .8); border: 1px solid var(--hairline); border-radius: var(--radius-panel); padding: 4px 6px; text-align: center; white-space: nowrap; }
+  .heal-slot.empty { color: var(--muted); opacity: .55; }
+  #boost-bar { height: 4px; margin-top: 6px; background: rgba(35, 42, 51, .85); border: 1px solid var(--hairline); border-radius: 2px; overflow: hidden; }
+  #boost-fill { display: block; height: 100%; width: 0%; background: var(--accent); transition: width 200ms ease; }
+
+  #loot-prompt { position: fixed; left: 50%; bottom: 128px; transform: translateX(-50%); font-family: var(--font-readout); font-size: 14px; color: var(--ink); background: rgba(35, 42, 51, .85); padding: 8px 14px; border: 1px solid var(--accent); border-radius: var(--radius-panel); }
+  #loot-prompt[hidden] { display: none; }
 
   #ammo { position: fixed; right: 28px; bottom: 24px; text-align: right; }
   #weapon-name { font-size: 13px; color: var(--muted); letter-spacing: .06em; }
@@ -98,24 +111,8 @@
   .keys li { display: flex; align-items: center; gap: 8px; }
   .keys kbd { min-width: 24px; padding: 2px 6px; border: 1px solid var(--hairline); border-radius: var(--radius-panel); font-family: var(--font-readout); font-size: 12px; color: var(--ink); text-align: center; }
 
-  #buy-menu { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(43, 53, 66, .7); pointer-events: auto; }
-  #buy-menu[hidden] { display: none; }
-  .buy-panel { width: min(520px, 100%); padding: 28px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-panel); }
-  .buy-panel h2 { margin: 0 0 4px; font-size: 24px; }
-  .buy-panel .buy-sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
-  #buy-money { font-family: var(--font-readout); color: var(--accent); font-size: 18px; }
-  #buy-items { display: grid; gap: 8px; }
-  .buy-item { display: grid; grid-template-columns: 28px 1fr auto; gap: 4px 12px; align-items: center; text-align: left; font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--hairline); border-radius: var(--radius-control); padding: 10px 12px; cursor: pointer; }
-  .buy-item:hover { border-color: var(--accent); }
-  .buy-key { grid-column: 1; grid-row: 1; font-family: var(--font-readout); font-size: 12px; color: var(--accent); border: 1px solid var(--hairline); border-radius: 4px; padding: 2px 0; text-align: center; }
-  .buy-name { grid-column: 2; grid-row: 1; font-weight: 600; }
-  .buy-desc { grid-column: 2; grid-row: 2; font-size: 13px; color: var(--muted); }
-  .buy-price { grid-column: 3; grid-row: 1 / span 2; font-family: var(--font-readout); color: var(--accent); }
-  #buy-message { min-height: 20px; margin-top: 12px; font-size: 13px; color: var(--muted); }
-  .buy-hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
-
   @media (prefers-reduced-motion: reduce) {
-    #hitmarker, #damage.on, #play { transition-duration: 0.01ms; animation-duration: 0.01ms; }
+    #hitmarker, #damage.on, #play, #zone-status.outside { transition-duration: 0.01ms; animation-duration: 0.01ms; }
   }
 </style>
 </head>
@@ -126,17 +123,16 @@
   <div id="damage"></div>
   <div id="crosshair"><i></i><i></i><i></i><i></i></div>
   <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+  <div id="compass"><canvas id="compass-canvas" width="360" height="28"></canvas></div>
   <div id="topbar">
-    <span id="round-value">ROUND 1</span>
-    <span id="score-value">0 — 0</span>
-    <span id="timer-value">1:40</span>
+    <span id="alive-value">ALIVE 12</span>
+    <span id="timer-label">ZONE</span>
+    <span id="timer-value">0:18</span>
   </div>
-  <div id="bomb-status"></div>
-  <div id="money">
-    <div id="money-value">$800</div>
-    <div id="grenade-value"></div>
-  </div>
+  <div id="zone-status">ZONE 1 — shrinks in 0:18</div>
+  <canvas id="minimap" width="150" height="150"></canvas>
   <div id="killfeed"></div>
+  <div id="loot-prompt" hidden></div>
   <div id="health-block">
     <div id="health-row">
       <span class="bar-label">HEALTH</span>
@@ -147,6 +143,12 @@
       <span class="bar-label">ARMOUR</span>
       <div class="bar"><i id="armor-fill" style="width:0%"></i></div>
     </div>
+    <div id="heals">
+      <span class="heal-slot" id="heal-bandage" data-label="4 Bandage">4 Bandage x0</span>
+      <span class="heal-slot" id="heal-medkit" data-label="5 Medkit">5 Medkit x0</span>
+      <span class="heal-slot" id="heal-drink" data-label="6 Drink">6 Drink x0</span>
+    </div>
+    <div id="boost-bar"><i id="boost-fill"></i></div>
   </div>
   <div id="ammo">
     <div id="weapon-name">P9 Sidearm</div>
@@ -155,20 +157,10 @@
   <div id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
 </div>
 
-<div id="buy-menu" hidden>
-  <section class="buy-panel" role="dialog" aria-modal="true" aria-labelledby="buy-title">
-    <h2 id="buy-title">Buy gear <span id="buy-money">$800</span></h2>
-    <p class="buy-sub">Buy time — spend the money you earned. Press B again to close.</p>
-    <div id="buy-items"></div>
-    <div id="buy-message"></div>
-    <div class="buy-hint">Keys 1–5 buy, or click. B closes.</div>
-  </section>
-</div>
-
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
     <h1 id="overlay-title">DUSTLINE<span>.</span></h1>
-    <p id="overlay-copy">A desert outpost at dusk. Plant the bomb at A or B, or eliminate the Crimson team. First to 5 rounds takes the match.</p>
+    <p id="overlay-copy">DUSTLINE — Battle Royale. 12 drop in, 1 walks out. Loot, survive the blue zone, be the last one alive.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</li>
@@ -176,9 +168,9 @@
       <li><kbd>Click</kbd> Fire</li>
       <li><kbd>R</kbd> Reload</li>
       <li><kbd>Q</kbd> Switch weapon</li>
-      <li><kbd>G</kbd> Throw grenade</li>
-      <li><kbd>E</kbd> Plant the bomb (hold)</li>
-      <li><kbd>B</kbd> Buy menu</li>
+      <li><kbd>G</kbd> Grenade</li>
+      <li><kbd>E</kbd> Pick up</li>
+      <li><kbd>4</kbd><kbd>5</kbd><kbd>6</kbd> Heal</li>
       <li><kbd>Ctrl</kbd> Crouch</li>
       <li><kbd>Space</kbd> Jump</li>
     </ul>
